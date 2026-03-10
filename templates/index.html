@@ -1,0 +1,796 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Fila-Wizard</title>
+  <style>
+    :root{
+      --bg:#f4f6fb;
+      --card:#ffffff;
+      --text:#0b0d12;
+      --muted:#5f6677;
+      --line:#e6e8ef;
+      --shadow:0 10px 30px rgba(10,15,25,.08);
+      --red:#b51f1f;
+      --black:#0b0d12;
+      --radius:18px;
+      --btnRadius:999px;
+      --pill:#eef0f6;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+      background:var(--bg);
+      color:var(--text);
+    }
+
+    /* Header */
+    .headerWrap{
+      width:100%;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      gap:14px;
+      padding:18px 16px 10px 16px;
+    }
+    .banner{
+      width:100%;
+      max-width:1100px;
+      display:flex;
+      justify-content:center;
+    }
+    .banner img{
+      width:min(1100px, 96vw);
+      height:auto;
+      /* optional polish */
+      filter: drop-shadow(0 2px 8px rgba(0,0,0,0.12));
+    }
+
+    /* Status bar */
+    .statusBar{
+      width:100%;
+      max-width:980px;
+      text-align:center;
+      padding:10px 16px;
+      border-radius:16px;
+      font-weight:900;
+      font-size:15px;
+      background:#d6d9df; /* darker gray */
+      color:#1c1f26;
+      letter-spacing:.2px;
+    }
+
+    /* Controls */
+    .controls{
+      width:100%;
+      max-width:980px;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      gap:12px;
+      padding-bottom:6px;
+    }
+    .search{
+      width:100%;
+      max-width:680px;
+      display:flex;
+      align-items:center;
+      gap:10px;
+      border:1px solid var(--line);
+      border-radius:999px;
+      padding:10px 14px;
+      background:#fff;
+      box-shadow:0 8px 20px rgba(10,15,25,.05);
+    }
+    .search svg{flex:0 0 auto; opacity:.6}
+    .search input{
+      border:none;
+      outline:none;
+      width:100%;
+      font-size:14px;
+      background:transparent;
+    }
+
+    .actionRow{
+      display:flex;
+      justify-content:center;
+      gap:10px;
+      flex-wrap:wrap;
+      width:100%;
+    }
+    button{
+      border:none;
+      cursor:pointer;
+      border-radius:var(--btnRadius);
+      padding:10px 14px;
+      font-weight:900;
+      font-size:13px;
+      line-height:1;
+      box-shadow:0 10px 25px rgba(10,15,25,.08);
+    }
+    .btn-black{background:var(--black); color:#fff;}
+    .btn-red{background:var(--red); color:#fff;}
+    .btn-ghost{
+      background:#fff;
+      color:var(--text);
+      border:1px solid var(--line);
+      box-shadow:none;
+    }
+
+    /* View controls */
+    .viewRow{
+      width:100%;
+      max-width:1100px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      padding:0 16px 12px 16px;
+      margin:0 auto;
+    }
+    .seg{
+      display:inline-flex;
+      background:var(--pill);
+      border:1px solid var(--line);
+      border-radius:999px;
+      overflow:hidden;
+    }
+    .seg button{
+      border-radius:0;
+      box-shadow:none;
+      padding:10px 14px;
+      background:transparent;
+      color:var(--text);
+      font-weight:900;
+    }
+    .seg button.active{
+      background:var(--black);
+      color:#fff;
+    }
+    .legend{
+      font-size:12px;
+      color:var(--muted);
+      background:#fff;
+      border:1px solid var(--line);
+      border-radius:999px;
+      padding:8px 12px;
+      white-space:nowrap;
+    }
+
+    /* Content */
+    .wrap{
+      max-width:1100px;
+      margin:0 auto 40px auto;
+      padding:0 16px;
+    }
+
+    /* Grid cards */
+    .grid{
+      display:grid;
+      grid-template-columns:repeat(6,1fr);
+      gap:14px;
+    }
+    @media(max-width:1050px){ .grid{grid-template-columns:repeat(3,1fr);} }
+    @media(max-width:620px){ .grid{grid-template-columns:repeat(2,1fr);} }
+
+    .slotCard{
+      background:var(--card);
+      border:1px solid var(--line);
+      border-radius:22px;
+      box-shadow:var(--shadow);
+      padding:14px;
+      cursor:pointer;
+      position:relative;
+      overflow:hidden;
+    }
+    .slotCard .slotNum{
+      font-weight:1000;
+      font-size:18px;
+      margin-bottom:10px;
+    }
+    .slotInner{
+      border-radius:18px;
+      border:1px solid rgba(0,0,0,.06);
+      padding:12px 12px 14px 12px;
+      text-align:center;
+    }
+    .kv{margin:8px 0}
+    .k{display:block; font-size:12px; color:var(--muted); font-weight:800; letter-spacing:.4px}
+    .v{display:block; font-size:18px; font-weight:1000}
+    .w{
+      margin-top:10px;
+      font-size:40px;
+      font-weight:1100;
+      letter-spacing:-1px;
+    }
+    .unit{font-size:14px; color:var(--muted); font-weight:900}
+
+    .badge{
+      position:absolute;
+      top:12px;
+      right:12px;
+      font-size:11px;
+      font-weight:1000;
+      padding:6px 10px;
+      border-radius:999px;
+      border:1px solid var(--line);
+      background:#fff;
+      color:var(--muted);
+    }
+    .badge.bad{background:#fff4f4; color:#8b1b1b; border-color:#f2c7c7;}
+    .badge.good{background:#f1fff5; color:#156a2c; border-color:#bfe8c9;}
+
+    /* Table */
+    table{
+      width:100%;
+      border-collapse:separate;
+      border-spacing:0;
+      background:#fff;
+      border:1px solid var(--line);
+      border-radius:22px;
+      overflow:hidden;
+      box-shadow:var(--shadow);
+    }
+    thead th{
+      text-align:left;
+      font-size:12px;
+      color:var(--muted);
+      letter-spacing:.4px;
+      padding:14px 16px;
+      border-bottom:1px solid var(--line);
+      background:#fbfcff;
+    }
+    tbody td{
+      padding:14px 16px;
+      border-bottom:1px solid var(--line);
+      font-weight:800;
+      font-size:13px;
+    }
+    tbody tr:last-child td{border-bottom:none;}
+    .pill{
+      display:inline-block;
+      padding:6px 10px;
+      border-radius:999px;
+      border:1px solid var(--line);
+      background:#fff;
+      font-weight:1000;
+    }
+
+    /* Modal */
+    .modalOverlay{
+      position:fixed;
+      inset:0;
+      background:rgba(0,0,0,.45);
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding:18px;
+      z-index:9999;
+    }
+    .modal{
+      width:min(560px, 96vw);
+      background:#fff;
+      border-radius:22px;
+      border:1px solid var(--line);
+      box-shadow:0 30px 80px rgba(0,0,0,.25);
+      overflow:hidden;
+    }
+    .modalHeader{
+      padding:14px 16px;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      border-bottom:1px solid var(--line);
+      background:#fbfcff;
+    }
+    .modalHeader h3{margin:0; font-size:16px; font-weight:1100;}
+    .close{
+      border:none;
+      background:transparent;
+      font-size:22px;
+      font-weight:900;
+      cursor:pointer;
+      padding:6px 10px;
+      box-shadow:none;
+    }
+    .modalBody{padding:16px;}
+    .row{display:flex; gap:10px; flex-wrap:wrap;}
+    .field{
+      flex:1 1 160px;
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+      margin-bottom:12px;
+    }
+    .field label{font-size:12px; color:var(--muted); font-weight:900;}
+    .field input, .field select{
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:10px 12px;
+      font-weight:900;
+      outline:none;
+    }
+    .modalFooter{
+      display:flex;
+      justify-content:flex-end;
+      gap:10px;
+      padding:14px 16px;
+      border-top:1px solid var(--line);
+      background:#fbfcff;
+    }
+
+    /* Toast */
+    .toast{
+      position:fixed;
+      left:50%;
+      transform:translateX(-50%);
+      bottom:18px;
+      background:#111;
+      color:#fff;
+      padding:10px 14px;
+      border-radius:999px;
+      font-weight:900;
+      font-size:13px;
+      display:none;
+      z-index:10000;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="headerWrap">
+    <div class="banner">
+      <!-- Place your transparent banner in: static/fila_wizard_banner.png -->
+      <img src="/static/fila_wizard_banner.png" alt="Fila-Wizard Banner" />
+    </div>
+
+    <div class="statusBar" id="statusBar">Loading status…</div>
+
+    <div class="controls">
+      <div class="search">
+        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z" fill="none" stroke="currentColor" stroke-width="2"></path>
+          <path d="M16.5 16.5 21 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+        </svg>
+        <input id="searchInput" type="text" placeholder="Search..." />
+      </div>
+
+      <div class="actionRow">
+        <button class="btn-red" id="btnRewriteGlobal">Rewrite NFC</button>
+        <button class="btn-black" id="btnExportCSV">Export CSV</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="viewRow">
+    <div class="seg" role="tablist" aria-label="View">
+      <button id="btnTable" class="active" type="button">Table</button>
+      <button id="btnSlots" type="button">Slots</button>
+    </div>
+    <div class="legend">Green ≥ 500g • Yellow 250–499g • Red &lt; 250g</div>
+  </div>
+
+  <div class="wrap">
+    <div id="tableView"></div>
+    <div id="gridView" style="display:none;"></div>
+  </div>
+
+  <!-- Slot modal -->
+  <div class="modalOverlay" id="modalOverlay">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modalHeader">
+        <h3 id="modalTitle">Slot</h3>
+        <button class="close" id="modalClose" aria-label="Close">×</button>
+      </div>
+      <div class="modalBody">
+        <div class="row">
+          <div class="field">
+            <label>Current UID</label>
+            <input id="m_uid" disabled />
+          </div>
+          <div class="field">
+            <label>Gross Weight (g)</label>
+            <input id="m_gross" disabled />
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label>Brand</label>
+            <input id="m_brand" placeholder="e.g. Hatchbox" />
+          </div>
+          <div class="field">
+            <label>Type</label>
+            <input id="m_type" placeholder="e.g. PLA" />
+          </div>
+          <div class="field">
+            <label>Color</label>
+            <input id="m_color" placeholder="e.g. Black" />
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label>Tare (g)</label>
+            <input id="m_tare" type="number" step="0.1" placeholder="e.g. 200" />
+          </div>
+          <div class="field">
+            <label>Full Roll Weight (g)</label>
+            <select id="m_full">
+              <option value="250">250</option>
+              <option value="500">500</option>
+              <option value="750">750</option>
+              <option value="1000" selected>1000</option>
+              <option value="2000">2000</option>
+              <option value="5000">5000</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:8px;">
+  <div class="field">
+    <label>Calibration Weight (g)</label>
+    <select id="m_cal_known">
+      <option value="250">250</option>
+      <option value="500">500</option>
+      <option value="750">750</option>
+      <option value="1000" selected>1000</option>
+      <option value="2000">2000</option>
+      <option value="5000">5000</option>
+    </select>
+    <div class="hint">Place this known weight on the scale, then press Calibrate.</div>
+  </div>
+  <div class="field" style="align-self:flex-end;">
+    <button class="btn btn-outline" id="btnZeroScale">Zero Scale</button>
+        <button class="btn" id="btnCalibrate" onclick="calibrateSelected()">Calibrate</button>
+  </div>
+</div>
+
+
+        <div class="field" style="margin-top:6px;">
+          <label style="color:#8b1b1b;">Rewrite warning</label>
+          <div style="font-size:13px;color:var(--muted);font-weight:800;">
+            Rewriting the NFC tag will overwrite any existing data on the tag.
+          </div>
+        </div>
+      </div>
+      <div class="modalFooter">
+        <button class="btn-ghost" id="modalCancel" type="button">Cancel</button>
+        <button class="btn-red" id="modalConfirm" type="button">Confirm Rewrite</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+  // ---------- Helpers ----------
+  const $ = (id) => document.getElementById(id);
+  const toast = (msg) => {
+    const t = $("toast");
+    t.textContent = msg;
+    t.style.display = "block";
+    clearTimeout(window.__toastT);
+    window.__toastT = setTimeout(() => t.style.display = "none", 2200);
+  };
+
+  const fmt = (n) => (n === null || n === undefined) ? "—" : String(n);
+
+  function weightClass(net){
+    if (net >= 500) return "good";
+    if (net >= 250) return "";
+    return "bad";
+  }
+  function innerBg(net){
+    if (net >= 500) return "#dff5e4";
+    if (net >= 250) return "#fff2c9";
+    return "#ffd6d6";
+  }
+
+  // ---------- State ----------
+  let allSlots = [];
+  let filteredSlots = [];
+  let currentView = "table";
+  let selectedSlotId = null;
+
+  // ---------- API ----------
+  async function fetchJSON(url){
+    const r = await fetch(url, {cache:"no-store"});
+    if(!r.ok) throw new Error(url + " " + r.status);
+    return await r.json();
+  }
+
+  async function loadData(){
+    // Try /api/status then /api/inventory; support both backends.
+    let data = null;
+    try{
+      const st = await fetchJSON("/api/status");
+      // expected keys: active_slots/present_ports/temperature/humidity and slots maybe
+      data = st;
+      if(!data.slots){
+        // some builds provide slots at /api/inventory
+        const inv = await fetchJSON("/api/inventory");
+        data.slots = inv.slots || inv;
+        data.active_slots = inv.active_slots ?? data.active_slots;
+        data.present_ports = inv.present_ports ?? data.present_ports;
+        data.temperature = inv.temperature ?? data.temperature;
+        data.humidity = inv.humidity ?? data.humidity;
+      }
+    }catch(e1){
+      try{
+        const inv = await fetchJSON("/api/inventory");
+        data = inv;
+      }catch(e2){
+        console.error(e1, e2);
+        $("statusBar").textContent = "Backend not reachable";
+        return;
+      }
+    }
+
+    const slots = data.slots || [];
+    allSlots = slots.map(s => ({
+      slot_id: s.slot_id ?? s.id ?? 0,
+      brand: s.brand ?? "Unknown",
+      type: s.type ?? "N/A",
+      color: s.color ?? "N/A",
+      uid: s.uid ?? "",
+      gross_weight: Number(s.gross_weight ?? s.gross ?? s.weight_gross ?? 0),
+      tare: (s.tare === null || s.tare === undefined) ? null : Number(s.tare),
+      net_weight: Number(s.weight ?? s.net_weight ?? s.net ?? 0),
+      calibration_status: s.calibration_status ?? (s.calibration_required ? "Not calibrated" : "Calibrated"),
+      calibration_required: !!s.calibration_required,
+      nfc_needs_programming: !!s.nfc_needs_programming,
+      is_active: (s.is_active !== undefined) ? !!s.is_active : true,
+    }));
+
+    // status bar
+    const active = data.active_slots ?? allSlots.length;
+    const ports = data.present_ports ?? active;
+    const temp = (data.temperature !== undefined && data.temperature !== null) ? data.temperature : "—";
+    const hum  = (data.humidity !== undefined && data.humidity !== null) ? data.humidity : "—";
+    $("statusBar").textContent = `${active} active • ${ports} ports • ${temp}°C • ${hum}% RH`;
+
+    applyFilter();
+  }
+
+  // Backwards-compatible alias (some actions call loadInventory)
+  async function loadInventory(){
+    return await loadData();
+  }
+
+  function applyFilter(){
+    const q = ($("searchInput").value || "").trim().toLowerCase();
+    filteredSlots = allSlots.filter(s => {
+      if(!q) return true;
+      const hay = `${s.slot_id+1} ${s.brand} ${s.type} ${s.color} ${s.uid}`.toLowerCase();
+      return hay.includes(q);
+    });
+    render();
+  }
+
+  // ---------- Render ----------
+  function render(){
+    if(currentView === "table"){
+      renderTable();
+      $("tableView").style.display = "";
+      $("gridView").style.display = "none";
+      $("btnTable").classList.add("active");
+      $("btnSlots").classList.remove("active");
+    }else{
+      renderGrid();
+      $("tableView").style.display = "none";
+      $("gridView").style.display = "";
+      $("btnSlots").classList.add("active");
+      $("btnTable").classList.remove("active");
+    }
+  }
+
+  function renderTable(){
+    const rows = filteredSlots
+      .sort((a,b)=> (a.slot_id - b.slot_id))
+      .map(s => `
+        <tr>
+          <td>${s.slot_id + 1}</td>
+          <td>${escapeHtml(s.brand)}</td>
+          <td>${escapeHtml(s.color)}</td>
+          <td>${escapeHtml(s.type)}</td>
+          <td><span class="pill">${fmt(s.net_weight)} g</span></td>
+          <td>
+            <button class="btn-ghost" style="padding:8px 12px;border-radius:999px" onclick="openSlot(${s.slot_id})">Tare / NFC</button>
+          </td>
+        </tr>
+      `).join("");
+
+    $("tableView").innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Slot</th>
+            <th>Brand</th>
+            <th>Color</th>
+            <th>Type</th>
+            <th>Weight</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>${rows || `<tr><td colspan="6" style="padding:18px;color:#6b7280;font-weight:900;">No results</td></tr>`}</tbody>
+      </table>
+    `;
+  }
+
+  function renderGrid(){
+    const cards = filteredSlots
+      .sort((a,b)=> (a.slot_id - b.slot_id))
+      .map(s => {
+        const net = Number(s.net_weight || 0);
+        const badgeClass = s.calibration_required ? "bad" : "good";
+        const badgeText = s.calibration_required ? "Calibration required" : "Calibrated";
+        const bg = innerBg(net);
+        return `
+          <div class="slotCard" onclick="openSlot(${s.slot_id})" role="button" tabindex="0">
+            <div class="badge ${badgeClass}">${badgeText}</div>
+            <div class="slotNum">Slot ${s.slot_id + 1}</div>
+            <div class="slotInner" style="background:${bg};">
+              <div class="kv"><span class="k">Brand</span><span class="v">${escapeHtml(s.brand)}</span></div>
+              <div class="kv"><span class="k">Type</span><span class="v">${escapeHtml(s.type)}</span></div>
+              <div class="kv"><span class="k">Color</span><span class="v">${escapeHtml(s.color)}</span></div>
+              <div class="kv"><span class="k">Weight</span><div class="w">${fmt(net)}<span class="unit"> g</span></div></div>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+    $("gridView").innerHTML = `<div class="grid">${cards || ""}</div>`;
+  }
+
+  function escapeHtml(str){
+    return String(str ?? "").replace(/[&<>"']/g, s => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
+    }[s]));
+  }
+
+  // ---------- Actions ----------
+  async function exportCSV(){
+    try{
+      window.location.href = "/api/export_csv";
+    }catch(e){
+      toast("Export failed");
+      console.error(e);
+    }
+  }
+
+  function openSlot(slotId){
+    const s = allSlots.find(x => x.slot_id === slotId);
+    if(!s){ toast("Slot not found"); return; }
+    selectedSlotId = slotId;
+    $("modalTitle").textContent = `Slot ${slotId + 1}`;
+    $("m_uid").value = s.uid || "—";
+    $("m_gross").value = (s.gross_weight ?? 0) + " g";
+    $("m_brand").value = s.brand || "";
+    $("m_type").value = s.type || "";
+    $("m_color").value = s.color || "";
+    $("m_tare").value = (s.tare ?? "");
+    $("modalOverlay").style.display = "flex";
+  }
+
+  function closeModal(){
+    $("modalOverlay").style.display = "none";
+    selectedSlotId = null;
+  }
+
+  async function confirmRewrite(){
+    if(selectedSlotId === null) return;
+
+    const payload = {
+      brand: $("m_brand").value.trim(),
+      type: $("m_type").value.trim(),
+      color: $("m_color").value.trim(),
+      tare: $("m_tare").value === "" ? null : Number($("m_tare").value),
+      full_weight: Number($("m_full").value)
+    };
+
+    // Endpoint varies by build; try rewrite_nfc first then program_nfc
+    const endpoints = [
+      `/api/rewrite_nfc/${selectedSlotId}`,
+      `/api/program_nfc/${selectedSlotId}`
+    ];
+
+    let ok = false;
+    let lastErr = null;
+    for(const url of endpoints){
+      try{
+        const r = await fetch(url, {
+          method:"POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify(payload)
+        });
+        if(r.ok){ ok = true; break; }
+        lastErr = await r.text();
+      }catch(e){
+        lastErr = String(e);
+      }
+    }
+
+    if(ok){
+      toast("NFC rewritten");
+      closeModal();
+      await loadData();
+    }else{
+      toast("Rewrite failed");
+      console.error(lastErr);
+    }
+  }
+
+  function openGlobalRewrite(){
+    // Open slot picker by prompting; keeps UI minimal
+    const input = prompt("Rewrite which slot number? (1..48)");
+    if(!input) return;
+    const n = Number(input);
+    if(!Number.isFinite(n) || n < 1) return toast("Invalid slot");
+    openSlot(n-1);
+  }
+
+  // ---------- Wire up ----------
+  $("searchInput").addEventListener("input", applyFilter);
+  $("btnExportCSV").addEventListener("click", exportCSV);
+  $("btnRewriteGlobal").addEventListener("click", openGlobalRewrite);
+
+  $("btnTable").addEventListener("click", () => { currentView="table"; render(); });
+  $("btnSlots").addEventListener("click", () => { currentView="slots"; render(); });
+
+  $("modalClose").addEventListener("click", closeModal);
+  $("modalCancel").addEventListener("click", closeModal);
+  $("modalOverlay").addEventListener("click", (e)=>{ if(e.target === $("modalOverlay")) closeModal(); });
+  $("modalConfirm").addEventListener("click", confirmRewrite);
+
+  // Load on page load / refresh
+  window.addEventListener("load", loadData);
+
+async function calibrateSelected(){
+  if(selectedSlotId === null) return;
+  const known = Number(document.getElementById("m_cal_known").value);
+  if(!known || known <= 0){ toast("Enter a valid calibration weight"); return; }
+
+  try{
+    const res = await fetch(`/api/calibrate/${selectedSlotId}`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({known_weight: known})
+    });
+    const j = await res.json().catch(()=>({}));
+    if(!res.ok || !j.success){
+      toast(j.error || ("Calibration failed ("+res.status+")"));
+      return;
+    }
+    toast("Calibration saved");
+    await loadInventory();
+    // Keep modal open so you can see updated status
+  }catch(e){
+    toast("Calibration error");
+  }
+}
+
+
+  // Zero Scale (capture raw offset with no load)
+  const btnZeroScale = document.getElementById('btnZeroScale');
+  if (btnZeroScale) {
+    btnZeroScale.addEventListener('click', async () => {
+      if (selectedSlotId == null) return;
+      if (!confirm('Zero the scale for this slot?\n\nMake sure the spool holder is EMPTY and nothing is touching the platform.')) return;
+      try {
+        const res = await fetch(`/api/zero/${selectedSlotId}`, { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Zero failed');
+        alert('Zero saved. Now place a known weight and click Calibrate.');
+        await loadInventory();
+      } catch (e) {
+        alert(`Zero failed: ${e.message}`);
+      }
+    });
+  }
+
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+[Unit]
+Description=FilaWizard Captive Portal Redirect (port 80)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+Environment=FILAWIZARD_TARGET=http://filawizard.local:5000
+ExecStart=/usr/bin/python3 /opt/filament_inventory/scripts/portal_redirect.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

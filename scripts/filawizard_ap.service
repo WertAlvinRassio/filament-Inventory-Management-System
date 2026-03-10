@@ -1,0 +1,12 @@
+[Unit]
+Description=FilaWizard Demo Access Point Setup
+After=network.target
+Wants=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/filament_inventory/scripts/filawizard_ap_setup.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
