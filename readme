@@ -1,0 +1,9 @@
+Problem: Load cell readings unstable through PCA9548A mux.
+Hardware:
+- Raspberry Pi 5
+- NAU7802
+- PN532 NFC
+- PCA9548A I2C multiplexer
+- 4 load cells
+
+Software: Python Flask web interface
