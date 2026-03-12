@@ -147,6 +147,7 @@ class NAU7802LoadCell:
             # Perform internal offset calibration
             if not self._nau.calibrate("INTERNAL"):
                 self.last_error = "NAU7802 internal calibration failed"
+                self._nau = None
                 return
 
             self.available = True
@@ -287,12 +288,13 @@ class FilamentSlot:
 
     def _read_ntag_text(self) -> Optional[str]:
         """Read text payload from NTAG2xx pages 4-19 (64 bytes).
-        Each ntag2xx_read_block returns 4 bytes (one NTAG2xx page)."""
+        ntag2xx_read_block returns 16 bytes (4 consecutive pages),
+        so we step by 4 to avoid overlapping reads."""
         if not self.nfc_available or not self.nfc:
             return None
         try:
             raw = bytearray()
-            for block in range(4, 20):
+            for block in range(4, 20, 4):
                 data = self.nfc.ntag2xx_read_block(block)
                 if not data:
                     break
