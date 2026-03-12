@@ -501,13 +501,25 @@ class InventoryManager:
         self.lock = threading.Lock()
         self.i2c = i2c
 
-        # Discover connected PCA9548 muxes
+        # Discover connected PCA9548 muxes.
+        # TCA9548A.__init__ does NOT probe the hardware — it always succeeds.
+        # We must verify each address exists on the bus first, otherwise
+        # TCA9548A_Channel.try_lock() will acquire the I2C lock, then raise
+        # OSError on writeto, permanently leaking the lock and deadlocking.
         self.muxes: List[adafruit_tca9548a.TCA9548A] = []
         for addr in PCA9548_ADDRESSES:
             try:
+                while not i2c.try_lock():
+                    pass
+                try:
+                    i2c.writeto(addr, b"\x00")  # deselect all channels
+                finally:
+                    i2c.unlock()
                 tca = adafruit_tca9548a.TCA9548A(i2c, address=addr)
                 self.muxes.append(tca)
                 log.info("Found PCA9548 mux at 0x%02X", addr)
+            except OSError:
+                log.debug("No mux at 0x%02X", addr)
             except Exception as e:
                 log.debug("No mux at 0x%02X: %s", addr, e)
 
