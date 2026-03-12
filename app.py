@@ -590,19 +590,23 @@ class InventoryManager:
                     log.info("  mux[%d] ch%d: %s", mux_idx, ch, detected)
 
     def _disable_unused_channels(self) -> None:
-        """Deselect mux channels that have no active devices.
-        Lock and immediately unlock each unused channel so that the
-        TCA9548A control register no longer routes traffic to it."""
+        """Deselect all mux channels by writing 0x00 to each mux's control
+        register.  Active channels are re-selected on demand by the TCA9548A
+        driver when downstream devices are accessed.
+
+        We use the raw I2C bus directly (same safe pattern as mux discovery)
+        instead of TCA9548A_Channel.try_lock(), which can leak the I2C lock
+        if writeto raises on a flaky bus."""
         for mux_idx, tca in enumerate(self.muxes):
-            for ch in range(8):
-                if (mux_idx, ch) not in self.active_channels:
-                    try:
-                        ch_obj = tca[ch]
-                        while not ch_obj.try_lock():
-                            pass
-                        ch_obj.unlock()
-                    except Exception:
-                        pass
+            try:
+                while not self.i2c.try_lock():
+                    pass
+                try:
+                    self.i2c.writeto(tca.address, b"\x00")
+                finally:
+                    self.i2c.unlock()
+            except Exception as e:
+                log.debug("Failed to deselect mux[%d]: %s", mux_idx, e)
 
     # -- Environmental sensor --
 
