@@ -151,6 +151,8 @@ class NAU7802LoadCell:
 
         except Exception as e:
             self.last_error = str(e)
+            self.available = False
+            self.initialized = False
             self._nau = None
 
     def data_ready(self) -> bool:
@@ -275,12 +277,13 @@ class FilamentSlot:
             self._was_present = self.hardware_present
 
     def _read_ntag_text(self) -> Optional[str]:
-        """Read text payload from NTAG2xx blocks 4-7."""
+        """Read text payload from NTAG2xx pages 4-19 (64 bytes).
+        Each ntag2xx_read_block returns 4 bytes (one NTAG2xx page)."""
         if not self.nfc_available or not self.nfc:
             return None
         try:
             raw = bytearray()
-            for block in range(4, 8):
+            for block in range(4, 20):
                 data = self.nfc.ntag2xx_read_block(block)
                 if not data:
                     break
@@ -290,14 +293,15 @@ class FilamentSlot:
             return None
 
     def _write_ntag_text(self, text: str) -> bool:
-        """Write text payload to NTAG2xx blocks 4-7 (64 bytes max)."""
+        """Write text payload to NTAG2xx pages 4-19 (64 bytes max).
+        Each NTAG2xx page is 4 bytes; ntag2xx_write_block expects exactly 4 bytes."""
         if not self.nfc_available or not self.nfc:
             return False
         payload = (text or "").encode("utf-8")[:64]
         payload = payload + b"\x00" * (64 - len(payload))
         try:
-            for i in range(4):
-                chunk = payload[i * 16:(i + 1) * 16]
+            for i in range(16):
+                chunk = payload[i * 4:(i + 1) * 4]
                 ok = self.nfc.ntag2xx_write_block(4 + i, bytearray(chunk))
                 if not ok:
                     return False
