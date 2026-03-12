@@ -520,21 +520,19 @@ class InventoryManager:
     # -- Channel detection --
 
     def _probe_address(self, tca_channel, address: int) -> bool:
-        """Attempt a 0-byte write to *address* on *tca_channel* to detect a device."""
+        """Attempt a 0-byte write to *address* on *tca_channel* to detect a device.
+        TCA9548A_Channel implements the I2C interface (try_lock/unlock/writeto)
+        rather than context-manager protocol."""
         try:
-            while not self.i2c.try_lock():
+            while not tca_channel.try_lock():
                 pass
             try:
-                tca_channel.__enter__()
-                try:
-                    self.i2c.writeto(address, b"")
-                    return True
-                except OSError:
-                    return False
-                finally:
-                    tca_channel.__exit__(None, None, None)
+                tca_channel.writeto(address, b"")
+                return True
+            except OSError:
+                return False
             finally:
-                self.i2c.unlock()
+                tca_channel.unlock()
         except Exception:
             return False
 
@@ -558,17 +556,17 @@ class InventoryManager:
                     self.active_channels[(mux_idx, ch)] = detected
 
     def _disable_unused_channels(self) -> None:
-        """Disable (deselect) mux channels that have no active devices.
-        The TCA9548A control register is a bitmask of enabled channels.
-        Writing 0x00 disables all channels on that mux."""
+        """Deselect mux channels that have no active devices.
+        Lock and immediately unlock each unused channel so that the
+        TCA9548A control register no longer routes traffic to it."""
         for mux_idx, tca in enumerate(self.muxes):
             for ch in range(8):
                 if (mux_idx, ch) not in self.active_channels:
-                    # Access and immediately release the channel to ensure it
-                    # is deselected.  The TCA9548A driver deselects on __exit__.
                     try:
-                        with tca[ch]:
+                        ch_obj = tca[ch]
+                        while not ch_obj.try_lock():
                             pass
+                        ch_obj.unlock()
                     except Exception:
                         pass
 
@@ -601,17 +599,23 @@ class InventoryManager:
     # -- Slot management --
 
     def _build_slots(self) -> None:
-        """Create FilamentSlot objects for each channel that has a NAU7802."""
-        slot_id = 0
+        """Create FilamentSlot objects for each channel that has a NAU7802.
+        slot_id is computed as mux_idx * 8 + channel so that it maps
+        to a stable physical location regardless of which other channels
+        are detected.  This keeps calibration config keyed correctly
+        across reboots even when some channels fail to probe."""
+        self._slot_map: Dict[int, FilamentSlot] = {}
         for mux_idx, tca in enumerate(self.muxes):
             for ch in range(8):
                 key = (mux_idx, ch)
                 devices = self.active_channels.get(key, [])
                 if "nau7802" in devices:
+                    slot_id = mux_idx * 8 + ch
                     tca_channel = tca[ch]
                     cfg = self.config.get(str(slot_id), SlotConfig())
-                    self.slots.append(FilamentSlot(slot_id, tca_channel, cfg))
-                    slot_id += 1
+                    slot = FilamentSlot(slot_id, tca_channel, cfg)
+                    self.slots.append(slot)
+                    self._slot_map[slot_id] = slot
 
     def _load_config(self) -> Dict[str, SlotConfig]:
         try:
@@ -642,7 +646,7 @@ class InventoryManager:
             pass
 
     def get_slot(self, slot_id: int) -> FilamentSlot:
-        return self.slots[int(slot_id)]
+        return self._slot_map[int(slot_id)]
 
     def update_readings(self) -> None:
         with self.lock:
