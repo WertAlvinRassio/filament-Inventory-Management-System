@@ -17,7 +17,9 @@ NFC payload format:
 
 import io
 import json
+import logging
 import os
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -36,6 +38,13 @@ from adafruit_pn532.i2c import PN532_I2C
 
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
+
+log = logging.getLogger("filawizard")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    stream=sys.stderr,
+)
 
 # ---------------------------
 # Configuration
@@ -498,8 +507,9 @@ class InventoryManager:
             try:
                 tca = adafruit_tca9548a.TCA9548A(i2c, address=addr)
                 self.muxes.append(tca)
-            except Exception:
-                pass
+                log.info("Found PCA9548 mux at 0x%02X", addr)
+            except Exception as e:
+                log.debug("No mux at 0x%02X: %s", addr, e)
 
         # Active channel map: (mux_index, channel) -> list of detected device names
         self.active_channels: Dict[Tuple[int, int], List[str]] = {}
@@ -528,8 +538,12 @@ class InventoryManager:
         TCA9548A_Channel implements the I2C interface (try_lock/unlock/writeto)
         rather than context-manager protocol."""
         try:
+            deadline = time.monotonic() + 2.0
             while not tca_channel.try_lock():
-                pass
+                if time.monotonic() > deadline:
+                    log.warning("_probe_address: timeout acquiring lock for 0x%02X", address)
+                    return False
+                time.sleep(0.01)
             try:
                 tca_channel.writeto(address, b"")
                 return True
@@ -537,7 +551,8 @@ class InventoryManager:
                 return False
             finally:
                 tca_channel.unlock()
-        except Exception:
+        except Exception as e:
+            log.debug("_probe_address 0x%02X exception: %s", address, e)
             return False
 
     def _scan_all_channels(self) -> None:
@@ -558,6 +573,7 @@ class InventoryManager:
 
                 if detected:
                     self.active_channels[(mux_idx, ch)] = detected
+                    log.info("  mux[%d] ch%d: %s", mux_idx, ch, detected)
 
     def _disable_unused_channels(self) -> None:
         """Deselect mux channels that have no active devices.
@@ -708,9 +724,21 @@ class InventoryManager:
 app = Flask(__name__)
 
 # Shared I2C bus (CircuitPython)
-_i2c = busio.I2C(board.SCL, board.SDA)
+try:
+    _i2c = busio.I2C(board.SCL, board.SDA)
+    log.info("I2C bus initialized on SCL=%s SDA=%s", board.SCL, board.SDA)
+except Exception as e:
+    log.error("Failed to initialize I2C bus: %s", e)
+    log.error("Make sure I2C is enabled: sudo raspi-config nonint do_i2c 0")
+    sys.exit(1)
 
-inventory = InventoryManager(_i2c)
+try:
+    inventory = InventoryManager(_i2c)
+    log.info("InventoryManager ready: %d mux(es), %d slot(s), env_sensor=%s",
+             len(inventory.muxes), len(inventory.slots), inventory.sensor is not None)
+except Exception as e:
+    log.error("InventoryManager init failed: %s", e, exc_info=True)
+    sys.exit(1)
 
 _bg_started = False
 _bg_lock = threading.Lock()
