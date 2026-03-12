@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """FilaWizard Filament Inventory (Rebuilt Backend)
 
-- Clean FilamentSlot + InventoryManager
-- Safe hardware detection (PCA9548 mux + NAU7802 + PN532)
-- Background loop works whether run via `python app.py` or `flask run`
+- Uses adafruit_tca9548a for PCA9548 I2C mux management
+- Uses cedargrove_nau7802 driver for NAU7802 24-bit ADC
+- Uses adafruit_hdc302x for HDC302x temperature/humidity sensor
+- Uses adafruit_pn532 for PN532 NFC via NAU7802 second STEMMA QT port
+- Auto-detects active mux channels and disables unused connections
+- Channel 7: HDC302x environmental sensor
+- Channels 0-6: NAU7802 load cell + PN532 NFC reader
 - Keeps existing UI + NFC format + calibration + Excel export + history
 - Prevents silent 500s: API endpoints return JSON with error details
 
@@ -25,7 +29,9 @@ from flask import Flask, jsonify, render_template, request, send_file
 # Hardware libs (Pi)
 import board
 import busio
-import smbus2
+import adafruit_tca9548a
+import adafruit_hdc302x
+from cedargrove_nau7802 import NAU7802
 from adafruit_pn532.i2c import PN532_I2C
 
 import openpyxl
@@ -42,10 +48,10 @@ HISTORY_FILE = os.path.join(BASE_DIR, "history.jsonl")
 
 PCA9548_ADDRESSES = [0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77]
 
-# Environmental sensor wiring (optional)
-HDC3022_ADDR = 0x44
-HDC3022_MUX_INDEX = 0
-HDC3022_CHANNEL = 7
+# Environmental sensor wiring
+HDC302X_ADDR = 0x44
+HDC302X_MUX_INDEX = 0
+HDC302X_CHANNEL = 7
 
 # Device addresses
 NAU7802_ADDR = 0x2A
@@ -59,7 +65,6 @@ NEW_ROLL_DEFAULT_G = 1000
 SCAN_INTERVAL_SEC = 2.0
 
 # Stable muxed NAU7802 read tuning
-MUX_SETTLE_SEC = 0.15
 NAU_WARMUP_READS = 30
 NAU_FILTER_SAMPLES = 40
 NAU_SAMPLE_DELAY_SEC = 0.03
@@ -108,236 +113,83 @@ def append_history(event: Dict[str, Any]) -> None:
         pass
 
 # ---------------------------
-# Multiplexer
-# ---------------------------
-
-class PCA9548Multiplexer:
-    def __init__(self, bus: smbus2.SMBus, address: int):
-        self.bus = bus
-        self.address = address
-        self.available = self._check_available()
-
-    def _check_available(self) -> bool:
-        try:
-            self.bus.write_byte(self.address, 0x00)
-            return True
-        except Exception:
-            return False
-
-    def select_channel(self, channel: int) -> bool:
-        if not self.available:
-            return False
-        try:
-            self.bus.write_byte(self.address, 1 << channel)
-            return True
-        except Exception:
-            return False
-
-    def disable_all(self) -> None:
-        try:
-            self.bus.write_byte(self.address, 0x00)
-        except Exception:
-            pass
-
-# ---------------------------
-# Environmental sensor (HDC3022) - optional
-# ---------------------------
-
-class HDC3022Sensor:
-    def __init__(self, bus: smbus2.SMBus, mux: PCA9548Multiplexer, channel: int, address: int = HDC3022_ADDR):
-        self.bus = bus
-        self.mux = mux
-        self.channel = channel
-        self.address = address
-
-    def read(self) -> Tuple[Optional[float], Optional[float]]:
-        try:
-            if not self.mux.select_channel(self.channel):
-                return None, None
-            time.sleep(0.01)
-            self.bus.write_i2c_block_data(self.address, 0x24, [0x00])
-            time.sleep(0.1)
-            data = self.bus.read_i2c_block_data(self.address, 0x00, 6)
-            temp_raw = (data[0] << 8) | data[1]
-            hum_raw = (data[3] << 8) | data[4]
-            temperature = -45 + 175 * (temp_raw / 65535.0)
-            humidity = 100 * (hum_raw / 65535.0)
-            return float(temperature), float(humidity)
-        except Exception:
-            return None, None
-        finally:
-            self.mux.disable_all()
-
-# ---------------------------
-# Load cell (NAU7802)
+# Load cell (NAU7802 via cedargrove driver)
 # ---------------------------
 
 class NAU7802LoadCell:
+    """Wrapper around cedargrove_nau7802 NAU7802 driver for load cell reading
+    through a TCA9548A mux channel.  The TCA9548A driver handles mux channel
+    switching transparently when devices are created with tca[channel]."""
 
-    REG_PU_CTRL = 0x00
-    REG_CTRL1   = 0x01
-    REG_CTRL2   = 0x02
-    REG_ADCO_B2 = 0x12
-    REG_ADCO_B1 = 0x13
-    REG_ADCO_B0 = 0x14
-
-    BIT_RR  = 0x01
-    BIT_PUD = 0x02
-    BIT_PUA = 0x04
-    BIT_PUR = 0x08
-    BIT_CR  = 0x20
-
-    def __init__(self, bus, mux, channel, address=NAU7802_ADDR):
-        self.bus = bus
-        self.mux = mux
-        self.channel = channel
+    def __init__(self, tca_channel, address=NAU7802_ADDR):
+        self.tca_channel = tca_channel
         self.address = address
-
         self.available = False
         self.initialized = False
         self.last_error = None
-
+        self._nau = None
         self._init_device()
 
-    def _select(self):
-        ok = self.mux.select_channel(self.channel)
-        if ok:
-            time.sleep(MUX_SETTLE_SEC)
-        return ok
-
-    def _write(self, reg, val):
-        if not self._select():
-            return False
+    def _init_device(self):
+        """Initialize the NAU7802 using the cedargrove driver.
+        The constructor handles: reset, enable, LDO 3V0, gain 128, 10 SPS."""
         try:
-            self.bus.write_byte_data(self.address, reg, val)
-            return True
+            self._nau = NAU7802(self.tca_channel, address=self.address, active_channels=1)
+            # Perform internal offset calibration
+            if not self._nau.calibrate("INTERNAL"):
+                self.last_error = "NAU7802 internal calibration failed"
+                return
+
+            self.available = True
+            self.initialized = True
+
+            # Discard warmup reads to let the ADC stabilize
+            for _ in range(10):
+                if self._nau.available():
+                    self._nau.read()
+                time.sleep(0.01)
+
         except Exception as e:
             self.last_error = str(e)
+            self._nau = None
+
+    def data_ready(self) -> bool:
+        """Check if ADC conversion data is ready."""
+        if not self._nau:
             return False
-        finally:
-            self.mux.disable_all()
-
-    def _read(self, reg):
-        if not self._select():
-            return 0
         try:
-            return self.bus.read_byte_data(self.address, reg)
-        except Exception:
-            return 0
-        finally:
-            self.mux.disable_all()
-
-    def _wait_for_bit(self, reg, mask, timeout=1.5):
-        start = time.time()
-        while time.time() - start < timeout:
-            if self._read(reg) & mask:
-                return True
-            time.sleep(0.02)
-        return False
-
-    def _probe(self):
-        try:
-            if not self._select():
-                return False
-            self.bus.read_byte_data(self.address, self.REG_PU_CTRL)
-            return True
+            return self._nau.available()
         except Exception:
             return False
-        finally:
-            self.mux.disable_all()
 
-    def _init_device(self):
+    def read_raw_once(self) -> Optional[float]:
+        """Read a single ADC value.  Returns signed value or None."""
+        if not (self.available and self.initialized and self._nau):
+            return None
+        try:
+            timeout = 100
+            while not self._nau.available() and timeout > 0:
+                time.sleep(0.02)
+                timeout -= 1
+            if timeout <= 0:
+                return None
+            return self._nau.read()
+        except Exception as e:
+            self.last_error = str(e)
+            return None
 
-        self.available = self._probe()
-
-        if not self.available:
-            return
-
-        # reset
-        self._write(self.REG_PU_CTRL, self.BIT_RR)
-        time.sleep(0.02)
-
-        self._write(self.REG_PU_CTRL, 0x00)
-        time.sleep(0.02)
-
-        # power digital
-        self._write(self.REG_PU_CTRL, self.BIT_PUD)
-
-        # wait ready
-        if not self._wait_for_bit(self.REG_PU_CTRL, self.BIT_PUR):
-            self.last_error = "PUR not ready"
-            return
-
-        # power analog
-        self._write(self.REG_PU_CTRL, self.BIT_PUD | self.BIT_PUA)
-
-        time.sleep(0.1)
-
-        # gain 128
-        ctrl1 = self._read(self.REG_CTRL1)
-        ctrl1 = (ctrl1 & 0xF8) | 0x07
-        self._write(self.REG_CTRL1, ctrl1)
-
-        # 10 SPS
-        ctrl2 = self._read(self.REG_CTRL2)
-        ctrl2 = (ctrl2 & 0x8F) | 0x00
-        self._write(self.REG_CTRL2, ctrl2)
-
-        # internal calibration
-        self._write(self.REG_CTRL2, ctrl2 | 0x04)
-
-        time.sleep(1)
-
-        # discard warmup reads
-        for _ in range(10):
-            self.read_raw_once()
-
-        self.initialized = True
-
-    def data_ready(self):
-        return bool(self._read(self.REG_PU_CTRL) & self.BIT_CR)
-
-    def read_raw_once(self):
-
+    def read_filtered_raw(self) -> Optional[float]:
+        """Read ADC with warmup and median filtering for stable results."""
         if not (self.available and self.initialized):
             return None
 
-        timeout = 100
-        while not self.data_ready() and timeout > 0:
-            time.sleep(0.02)
-            timeout -= 1
-
-        if timeout <= 0:
-            return None
-
-        if not self._select():
-            return None
-
-        try:
-            b2 = self.bus.read_byte_data(self.address, self.REG_ADCO_B2)
-            b1 = self.bus.read_byte_data(self.address, self.REG_ADCO_B1)
-            b0 = self.bus.read_byte_data(self.address, self.REG_ADCO_B0)
-        finally:
-            self.mux.disable_all()
-
-        value = (b2 << 16) | (b1 << 8) | b0
-
-        if value & 0x800000:
-            value -= 0x1000000
-
-        return value
-
-    def read_filtered_raw(self):
-
-        if not (self.available and self.initialized):
-            return None
-
+        # Warmup reads (discarded)
         for _ in range(NAU_WARMUP_READS):
             self.read_raw_once()
             time.sleep(NAU_SAMPLE_DELAY_SEC)
 
+        # Collect filtered samples
         vals = []
-
         for _ in range(NAU_FILTER_SAMPLES):
             v = self.read_raw_once()
             if v is not None:
@@ -348,11 +200,8 @@ class NAU7802LoadCell:
             return None
 
         vals.sort()
+        return vals[len(vals) // 2]
 
-        mid = len(vals)//2
-
-        return vals[mid]
-   
 # ---------------------------
 # Slot + Config
 # ---------------------------
@@ -366,15 +215,17 @@ class SlotConfig:
     last_calibrated: Optional[str] = None
 
 class FilamentSlot:
-    def __init__(self, slot_id: int, bus: smbus2.SMBus, mux: PCA9548Multiplexer, channel: int, i2c_shared: busio.I2C, cfg: SlotConfig):
+    """Represents a single filament slot with NAU7802 load cell and PN532 NFC,
+    accessed through a TCA9548A mux channel.  The PN532 is connected via the
+    NAU7802's second STEMMA QT passthrough port on the same mux channel."""
+
+    def __init__(self, slot_id: int, tca_channel, cfg: SlotConfig):
         self.slot_id = slot_id
-        self.bus = bus
-        self.mux = mux
-        self.channel = channel
-        self.i2c_shared = i2c_shared
+        self.tca_channel = tca_channel
         self.cfg = cfg
 
-        self.nau7802 = NAU7802LoadCell(bus=bus, mux=mux, channel=channel, address=NAU7802_ADDR)
+        # Initialize NAU7802 load cell via cedargrove driver
+        self.nau7802 = NAU7802LoadCell(tca_channel=tca_channel, address=NAU7802_ADDR)
         self.nfc: Optional[PN532_I2C] = None
 
         self.has_scale = bool(self.nau7802.available)
@@ -399,6 +250,7 @@ class FilamentSlot:
         self.is_active = False
         self.last_error: Optional[str] = None
 
+        # Initialize PN532 NFC on the same mux channel (via NAU7802 second STEMMA QT)
         self._init_nfc()
 
     @property
@@ -406,12 +258,10 @@ class FilamentSlot:
         return float(self.cfg.calibration_factor or 1.0)
 
     def _init_nfc(self) -> None:
+        """Initialize PN532 NFC reader on the same mux channel as the NAU7802.
+        The PN532 is connected via the NAU7802's second STEMMA QT passthrough."""
         try:
-            if not self.mux.select_channel(self.channel):
-                self.nfc_available = False
-                return
-            time.sleep(0.02)
-            self.nfc = PN532_I2C(self.i2c_shared, debug=False, address=PN532_ADDR)
+            self.nfc = PN532_I2C(self.tca_channel, debug=False, address=PN532_ADDR)
             self.nfc.SAM_configuration()
             self.nfc_available = True
             self.has_nfc = True
@@ -421,16 +271,14 @@ class FilamentSlot:
             self.has_nfc = False
             self.last_error = f"NFC init: {e}"
         finally:
-            self.mux.disable_all()
             self.hardware_present = bool(self.has_scale or self.has_nfc)
             self._was_present = self.hardware_present
 
     def _read_ntag_text(self) -> Optional[str]:
+        """Read text payload from NTAG2xx blocks 4-7."""
         if not self.nfc_available or not self.nfc:
             return None
         try:
-            if not self.mux.select_channel(self.channel):
-                return None
             raw = bytearray()
             for block in range(4, 8):
                 data = self.nfc.ntag2xx_read_block(block)
@@ -440,37 +288,33 @@ class FilamentSlot:
             return raw.decode("utf-8", errors="ignore").strip("\x00").strip()
         except Exception:
             return None
-        finally:
-            self.mux.disable_all()
 
     def _write_ntag_text(self, text: str) -> bool:
+        """Write text payload to NTAG2xx blocks 4-7 (64 bytes max)."""
         if not self.nfc_available or not self.nfc:
             return False
         payload = (text or "").encode("utf-8")[:64]
         payload = payload + b"\x00" * (64 - len(payload))
         try:
-            if not self.mux.select_channel(self.channel):
-                return False
             for i in range(4):
-                chunk = payload[i*16:(i+1)*16]
+                chunk = payload[i * 16:(i + 1) * 16]
                 ok = self.nfc.ntag2xx_write_block(4 + i, bytearray(chunk))
                 if not ok:
                     return False
             return True
         except Exception:
             return False
-        finally:
-            self.mux.disable_all()
 
     def refresh_hardware(self) -> None:
+        """Re-probe hardware and handle hotplug events."""
         prev = self._was_present
 
-        # scale re-init if missing
+        # Re-init scale if it went away
         if not self.nau7802.available:
-            self.nau7802 = NAU7802LoadCell(bus=self.bus, mux=self.mux, channel=self.channel, address=NAU7802_ADDR)
+            self.nau7802 = NAU7802LoadCell(tca_channel=self.tca_channel, address=NAU7802_ADDR)
         self.has_scale = bool(self.nau7802.available)
 
-        # NFC re-init if missing
+        # Re-init NFC if it went away
         if not self.nfc_available:
             self._init_nfc()
         self.has_nfc = bool(self.nfc_available)
@@ -486,6 +330,8 @@ class FilamentSlot:
         self._was_present = self.hardware_present
 
     def read_nfc(self) -> bool:
+        """Read NFC tag UID and payload.  The TCA9548A driver handles mux
+        channel selection transparently."""
         if not self.nfc_available or not self.nfc:
             self.uid = None
             self.nfc_needs_programming = False
@@ -494,11 +340,6 @@ class FilamentSlot:
             return False
 
         try:
-            if not self.mux.select_channel(self.channel):
-                self.uid = None
-                self.nfc_needs_programming = False
-                return False
-
             uid_bytes = self.nfc.read_passive_target(timeout=0.4)
             if not uid_bytes:
                 self.uid = None
@@ -521,7 +362,7 @@ class FilamentSlot:
                 self.filament_brand, self.filament_color, self.filament_type = parts[0], parts[1], parts[2]
                 parsed_any = True
 
-                tare = None
+            tare = None
             if len(parts) >= 4 and parts[3] != "":
                 tare = safe_float(parts[3])
             self.tag_tare = tare
@@ -530,11 +371,9 @@ class FilamentSlot:
         except Exception as e:
             self.last_error = f"NFC read: {e}"
             return False
-        finally:
-            self.mux.disable_all()
 
     def read_weight(self):
-
+        """Read filtered weight from the NAU7802 load cell."""
         if not self.nau7802.available:
             self.weight = 0.0
             self.gross_weight = 0.0
@@ -635,39 +474,144 @@ class FilamentSlot:
 # ---------------------------
 
 class InventoryManager:
-    def __init__(self, bus: smbus2.SMBus, i2c_shared: busio.I2C):
+    """Manages all filament slots across one or more PCA9548 muxes.
+
+    On startup:
+      1. Probes PCA9548_ADDRESSES to find connected muxes (via adafruit_tca9548a).
+      2. Scans every channel on every mux for known device addresses.
+      3. Builds FilamentSlot objects only for channels with a NAU7802.
+      4. Creates an HDC302x sensor instance for the designated env channel.
+      5. Disables (deselects) all channels that have no active devices.
+    """
+
+    def __init__(self, i2c: busio.I2C):
         self.lock = threading.Lock()
-        self.bus = bus
-        self.i2c_shared = i2c_shared
+        self.i2c = i2c
 
-        self.muxes: List[PCA9548Multiplexer] = []
+        # Discover connected PCA9548 muxes
+        self.muxes: List[adafruit_tca9548a.TCA9548A] = []
         for addr in PCA9548_ADDRESSES:
-            mux = PCA9548Multiplexer(self.bus, addr)
-            if mux.available:
-                self.muxes.append(mux)
+            try:
+                tca = adafruit_tca9548a.TCA9548A(i2c, address=addr)
+                self.muxes.append(tca)
+            except Exception:
+                pass
 
-        self.sensor: Optional[HDC3022Sensor] = None
-        if self.muxes and HDC3022_MUX_INDEX < len(self.muxes):
-            self.sensor = HDC3022Sensor(self.bus, self.muxes[HDC3022_MUX_INDEX], HDC3022_CHANNEL, HDC3022_ADDR)
+        # Active channel map: (mux_index, channel) -> list of detected device names
+        self.active_channels: Dict[Tuple[int, int], List[str]] = {}
+        self._scan_all_channels()
 
+        # Environmental sensor
+        self.sensor: Optional[adafruit_hdc302x.HDC302x] = None
         self.temperature_c: Optional[float] = None
         self.humidity: Optional[float] = None
+        self._init_env_sensor()
 
+        # Config + slots
         self.config = self._load_config()
         self.slots: List[FilamentSlot] = []
         self._build_slots()
 
+        # Disable unused channels
+        self._disable_unused_channels()
+
         self.last_error: Optional[str] = None
 
+    # -- Channel detection --
+
+    def _probe_address(self, tca_channel, address: int) -> bool:
+        """Attempt a 0-byte write to *address* on *tca_channel* to detect a device."""
+        try:
+            while not self.i2c.try_lock():
+                pass
+            try:
+                tca_channel.__enter__()
+                try:
+                    self.i2c.writeto(address, b"")
+                    return True
+                except OSError:
+                    return False
+                finally:
+                    tca_channel.__exit__(None, None, None)
+            finally:
+                self.i2c.unlock()
+        except Exception:
+            return False
+
+    def _scan_all_channels(self) -> None:
+        """Probe each mux channel for known device addresses."""
+        for mux_idx, tca in enumerate(self.muxes):
+            for ch in range(8):
+                channel = tca[ch]
+                detected: List[str] = []
+
+                if mux_idx == HDC302X_MUX_INDEX and ch == HDC302X_CHANNEL:
+                    if self._probe_address(channel, HDC302X_ADDR):
+                        detected.append("hdc302x")
+                else:
+                    if self._probe_address(channel, NAU7802_ADDR):
+                        detected.append("nau7802")
+                    if self._probe_address(channel, PN532_ADDR):
+                        detected.append("pn532")
+
+                if detected:
+                    self.active_channels[(mux_idx, ch)] = detected
+
+    def _disable_unused_channels(self) -> None:
+        """Disable (deselect) mux channels that have no active devices.
+        The TCA9548A control register is a bitmask of enabled channels.
+        Writing 0x00 disables all channels on that mux."""
+        for mux_idx, tca in enumerate(self.muxes):
+            for ch in range(8):
+                if (mux_idx, ch) not in self.active_channels:
+                    # Access and immediately release the channel to ensure it
+                    # is deselected.  The TCA9548A driver deselects on __exit__.
+                    try:
+                        with tca[ch]:
+                            pass
+                    except Exception:
+                        pass
+
+    # -- Environmental sensor --
+
+    def _init_env_sensor(self) -> None:
+        """Initialize the HDC302x sensor on the designated mux channel."""
+        key = (HDC302X_MUX_INDEX, HDC302X_CHANNEL)
+        if key not in self.active_channels:
+            return
+        if HDC302X_MUX_INDEX >= len(self.muxes):
+            return
+        try:
+            tca_channel = self.muxes[HDC302X_MUX_INDEX][HDC302X_CHANNEL]
+            self.sensor = adafruit_hdc302x.HDC302x(tca_channel, address=HDC302X_ADDR)
+        except Exception:
+            self.sensor = None
+
+    def _read_env_sensor(self) -> None:
+        """Read temperature and humidity from the HDC302x sensor."""
+        if not self.sensor:
+            return
+        try:
+            self.temperature_c = self.sensor.temperature
+            self.humidity = self.sensor.relative_humidity
+        except Exception:
+            self.temperature_c = None
+            self.humidity = None
+
+    # -- Slot management --
+
     def _build_slots(self) -> None:
-        max_by_mux = len(self.muxes) * 8
-        target = min(DEFAULT_SLOT_COUNT, max_by_mux) if max_by_mux > 0 else 0
-        for slot_id in range(target):
-            mux_index = slot_id // 8
-            channel = slot_id % 8
-            mux = self.muxes[mux_index]
-            cfg = self.config.get(str(slot_id), SlotConfig())
-            self.slots.append(FilamentSlot(slot_id, self.bus, mux, channel, self.i2c_shared, cfg))
+        """Create FilamentSlot objects for each channel that has a NAU7802."""
+        slot_id = 0
+        for mux_idx, tca in enumerate(self.muxes):
+            for ch in range(8):
+                key = (mux_idx, ch)
+                devices = self.active_channels.get(key, [])
+                if "nau7802" in devices:
+                    tca_channel = tca[ch]
+                    cfg = self.config.get(str(slot_id), SlotConfig())
+                    self.slots.append(FilamentSlot(slot_id, tca_channel, cfg))
+                    slot_id += 1
 
     def _load_config(self) -> Dict[str, SlotConfig]:
         try:
@@ -678,6 +622,7 @@ class InventoryManager:
             for k, v in (raw.get("slots") or {}).items():
                 out[str(k)] = SlotConfig(
                     calibration_factor=float(v.get("calibration_factor", 1.0) or 1.0),
+                    zero_offset_raw=float(v.get("zero_offset_raw", 0.0) or 0.0),
                     last_calibrated=v.get("last_calibrated"),
                 )
             return out
@@ -688,6 +633,7 @@ class InventoryManager:
         try:
             payload = {"slots": {str(s.slot_id): {
                 "calibration_factor": float(s.cfg.calibration_factor),
+                "zero_offset_raw": float(s.cfg.zero_offset_raw),
                 "last_calibrated": s.cfg.last_calibrated,
             } for s in self.slots}}
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -701,8 +647,7 @@ class InventoryManager:
     def update_readings(self) -> None:
         with self.lock:
             try:
-                if self.sensor:
-                    self.temperature_c, self.humidity = self.sensor.read()
+                self._read_env_sensor()
 
                 if not hasattr(self, "_nfc_poll_counter"):
                     self._nfc_poll_counter = 0
@@ -718,10 +663,10 @@ class InventoryManager:
                             s.weight = 0.0
                             continue
 
-                    # Always read weight
+                        # Always read weight
                         s.read_weight()
 
-                    # Only poll NFC occasionally
+                        # Only poll NFC occasionally
                         if self._nfc_poll_counter % 5 == 0:
                             s.read_nfc()
 
@@ -754,11 +699,10 @@ class InventoryManager:
 
 app = Flask(__name__)
 
-# Shared buses
-_bus = smbus2.SMBus(1)
+# Shared I2C bus (CircuitPython)
 _i2c = busio.I2C(board.SCL, board.SDA)
 
-inventory = InventoryManager(_bus, _i2c)
+inventory = InventoryManager(_i2c)
 
 _bg_started = False
 _bg_lock = threading.Lock()
@@ -922,7 +866,7 @@ def api_export_csv():
 
     def esc(v):
         sv = "" if v is None else str(v)
-        if any(c in sv for c in [",","\n","\r","\""]):
+        if any(c in sv for c in [",","\n","\r",'"']):
             sv = sv.replace('"', '""')
             return f'"{sv}"'
         return sv

@@ -14,7 +14,7 @@ sudo apt install -y hostapd dnsmasq avahi-daemon
 sudo mkdir -p $APP_DIR
 sudo cp -r ./* $APP_DIR
 
-sudo pip3 install flask openpyxl smbus2 adafruit-circuitpython-pn532
+sudo pip3 install flask openpyxl adafruit-circuitpython-pn532 adafruit-circuitpython-tca9548a adafruit-circuitpython-hdc302x cedargrove-nau7802
 
 # --- Hostname + mDNS (.local) ---
 sudo hostnamectl set-hostname filawizard
