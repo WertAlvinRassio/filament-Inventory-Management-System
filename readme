@@ -1,9 +1,9 @@
-Problem: Load cell readings unstable through PCA9548A mux.
-Hardware:
+C++ Zop File is the most recent and best running build.
 - Raspberry Pi 5
 - NAU7802
 - PN532 NFC
 - PCA9548A I2C multiplexer
 - 4 load cells
 
-Software: Python Flask web interface
+Software: C++ hardware control with a Python Flask web interface
+to veiw and control 3d printer filament inventory
